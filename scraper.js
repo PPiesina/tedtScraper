@@ -2,7 +2,6 @@ const puppeteer = require('puppeteer');
 const PARAM_URL = `https://ted.europa.eu/TED/search/search.do`;
 const SEARCH_RESULT_LINK = (pageNumber) => `https://ted.europa.eu/TED/search/searchResult.do?page=${pageNumber}`;
 
-const fs = require('fs');
 const ObjectsToCsv = require('objects-to-csv');
 
 const tedScraper = {
@@ -13,65 +12,101 @@ const tedScraper = {
     noticeData: [],
     noticeDataJSON: null,
 
-    initialize: async () => {
-        tedScraper.browser = await puppeteer.launch({
+    initialize: async function asyncCall() {
+        this.browser = await puppeteer.launch({
             headless: false,
           });
-        tedScraper.page = await tedScraper.browser.newPage();   
-        await tedScraper.page.setViewport({width:1500, height:800});
-    },
-    setParams: async (CPV_ID) => {
-        await tedScraper.page.goto(PARAM_URL, { waitUntil: 'networkidle0' });
-        await tedScraper.page.click('#searchScope3');
+        this.page = await this.browser.newPage();   
+        await this.page.setViewport({width:1500, height:5000});    
+      },
 
-        await tedScraper.page.type('input[id="DOCUMENT_TYPE"]', "'contract award notice'");
-        await tedScraper.page.type('input[id="CPV"]', CPV_ID);
+    setParams: async function asyncCall(CPV_ID) {
+        await this.page.goto(PARAM_URL);
+        await this.page.waitFor('#main');
+        await this.page.click('#searchScope3');
+
+        await this.page.type('input[id="DOCUMENT_TYPE"]', "'contract award notice'");
+        await this.page.type('input[id="CPV"]', CPV_ID);
      
-        await tedScraper.page.click('[title="Perform search"]');
-        await tedScraper.page.waitForNavigation({ waitUntil: 'networkidle0' }); 
+        await this.page.click('[title="Perform search"]');
+        await this.page.waitFor('#notice');
     },
-    getNumberOfPages: async () => {
-        let lastPageLink = await tedScraper.page.$eval('a.pagelast-link',  a => a.getAttribute('href'));
-        tedScraper.numberOfPages = parseInt(lastPageLink.split('=')[1]);
+
+    getNumberOfPages: async function asyncCall() {
+        // add condition if there are more tnah one pages:
+        //
+
+        let lastPageLink = await this.page.$eval('a.pagelast-link',  a => a.getAttribute('href'));
+        this.numberOfPages = parseInt(lastPageLink.split('=')[1]);
     },
-    startScraping: async () => {
-        for (let ii = 1; ii <= tedScraper.numberOfPages; ii++){
-            await tedScraper.page.goto(SEARCH_RESULT_LINK(ii), { waitUntil: 'networkidle0' });
 
-            let noticeLinks = await tedScraper.page.$$('a[title="View this notice"]');
+    
+    startScraping: async function asyncCall() {
+        let docCounter = 1;
+        for (let ii = 1; ii <= this.numberOfPages; ii++){
+            await this.page.goto(SEARCH_RESULT_LINK(ii));
+            await this.page.waitFor('#notice');
+            await this.page.waitFor(1000)
 
+            const noticeLinks = await this.page.$$('a[title="View this notice"]');
+            
+      
+
+            
             for (let yy = 0; yy < noticeLinks.length; yy++){
-                noticeLinks = await tedScraper.page.$$('a[title="View this notice"]');
-                await noticeLinks[yy].click();
-                await tedScraper.page.waitFor('#fullDocument');
-
-                const winnerNameArrElementHandles = await tedScraper.page.$x("//span[contains(text(), 'V.')]/../..//*[contains(text(), 'Official name:')]");
                 
-                let pageNumber = await tedScraper.page.$x("//div[@id='resultNav']//li//span[contains(text(), '/')]");
-               
-                pageNumber = await tedScraper.page.evaluate(el => el.innerText, pageNumber[0]);
+                await noticeLinks[yy].click({
+                    button: 'middle'
+                  });
+                }
 
+            const allPages = await this.browser.pages();
+
+           
+
+            for (let yy = 2; yy < allPages.length; yy++){                
+                
+                let currentPage = allPages[yy];
+
+                
+
+                await currentPage.waitFor('#fullDocument');
+                
+                const winnerNameArrElementHandles = await currentPage.$x("//span[contains(text(), 'V.')]/../..//*[contains(text(), 'Official name:')]");
+                
+                let docNum = await currentPage.$x("//div[@id='fullDocument']/div/div/p");            
+                docNum = await currentPage.evaluate(el => el.innerText, docNum[1]); 
+               
+         
+                
+               
                 let contactInfoFinal = [{                    
-                    url: tedScraper.page.url(),
+                    url: currentPage.url(),
                     name: " ",
                     email: " ",
                     phone: " ",
-                    pageNum: pageNumber
+                    country: " ",
+                    docNumber: docNum,
+                    docCounter: docCounter
                 }];
-
+              
                 let counter = 0;
+               
+                for (const winner of winnerNameArrElementHandles) {          
 
-                for (const winner of winnerNameArrElementHandles) {
-                    //create object with info
-                    let contactInfo = await tedScraper.page.evaluate(el => el.innerText, winner);
+                    let contactInfo = await currentPage.evaluate(el => el.innerText, winner);
+                
                     contactInfo = contactInfo.trim().split('\n');
+                 
                     contactInfo = contactInfo.map(item => {
+                    
                         item = item.split(':');
                         return {[item[0]]: item[1]};
+                      
                     });
-                    contactInfo = Object.assign({}, ...contactInfo);
+                  
+                    contactInfo = Object.assign({}, ...contactInfo);                
 
-                    //create object with needed data
                     if (counter){
                         contactInfoFinal.push({});
                         contactInfoFinal[counter]["url"] = " ";                        
@@ -81,18 +116,21 @@ const tedScraper = {
                     contactInfoFinal[counter]["name"] = contactInfo["Official name"];
                     contactInfoFinal[counter]["email"] = contactInfo["E-mail"];
                     contactInfoFinal[counter]["phone"] = contactInfo["Telephone"];
-                    contactInfoFinal[counter]["pageNum"] =  pageNumber
+                    contactInfoFinal[counter]["country"] = contactInfo["Country"];
+                    contactInfoFinal[counter]["docNumber"] =  docNum;
+                    contactInfoFinal[counter]["docCounter"] =  docCounter;
                     counter++;     
                 }
-                tedScraper.noticeData.push(contactInfoFinal);
-                tedScraper.exportToCsv(contactInfoFinal);
+                this.noticeData.push(contactInfoFinal);
+                this.exportToCsv(contactInfoFinal);
 
-                await tedScraper.page.goBack();
-                await tedScraper.page.waitFor('#notice');
-            }
+                currentPage.close();    
+                docCounter++;            
+                }
         }
     },
-    exportToCsv: async (info) => {      
+
+    exportToCsv: async function asyncCall(info) {      
         new ObjectsToCsv(info).toDisk('./test.csv', { append: true });    
     }     
 }
